@@ -67,6 +67,9 @@ def _extract_small_int(text: str) -> int | None:
     lower = text.lower()
     for w, n in words.items():
         if re.search(rf"\b{w}\b", lower):
+            # "Put one on top of the other" uses "one" idiomatically, not as a count.
+            if w == "one" and re.search(r"\bone on top\b", lower):
+                continue
             return n
     m = re.search(r"\b(\d{1,2})\b", lower)
     if m:

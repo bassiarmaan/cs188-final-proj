@@ -1,0 +1,126 @@
+\documentclass[10pt,letterpaper,twocolumn]{article}
+\usepackage[margin=0.75in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{times}
+\usepackage{mathptmx}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{float}
+\usepackage{caption}
+\usepackage{titlesec}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{microtype}
+\setlength{\columnsep}{0.25in}
+\setlength{\parindent}{1em}
+\setlength{\parskip}{0pt}
+\renewcommand{\thesection}{\Roman{section}}
+\titleformat{\section}{\centering\normalfont\scshape}{\thesection.}{0.5em}{}
+\titleformat{\subsection}{\normalfont\itshape}{\Alph{subsection}.}{0.5em}{}
+\captionsetup{font=small}
+\hypersetup{colorlinks=true,linkcolor=black,urlcolor=blue,citecolor=black}
+\lstset{basicstyle=\ttfamily\footnotesize,breaklines=true,frame=single}
+
+\title{Computer Science 188 Final Project\\[2mm]\large Stackademic}
+\author{Armaan Bassi | Rahul Nanda}
+\date{}
+
+\begin{document}
+\maketitle
+\thispagestyle{empty}
+
+\section{Problem Statement}
+Stackademic is a tabletop manipulation project built in RoboSuite / MuJoCo in which a Franka Panda robot must interpret a small set of structured language commands and rearrange multiple cubes into target layouts. The main goal is to bridge natural-language style task requests with an executable robotics pipeline that can reliably complete arrangements such as horizontal rows, vertical stacks, and color-sorted formations. Rather than training a fully learned end-to-end policy, the project emphasizes interpretable control, modular system design, and measurable geometric success.
+
+The problem is motivated by the broader challenge of connecting high-level human instructions to low-level robot behavior. A user should be able to say commands such as \textit{stack two blocks}, \textit{put four cubes in a row}, or \textit{sort by color}, and the system should map the phrase to a concrete manipulation plan. This requires solving several smaller problems: parsing instructions, selecting the correct task configuration, generating placement targets, controlling the robot end-effector, and evaluating whether the final arrangement satisfies the intended goal.
+
+The environment uses multiple cubes on a tabletop with configurable spawn profiles and color presets. Success is defined in three ways. First, the final cube arrangement must satisfy a geometric verifier for the requested pattern. Second, the closed-loop policy must actually finish its full sequence of pick-and-place phases rather than accidentally ending in a correct layout. Third, the overall language-to-control pipeline must complete without timing out or raising an unsupported-command error.
+
+\section{System Design / Methodology}
+The Stackademic system is organized as a layered pipeline so that each component has a narrow and interpretable responsibility. At the front end, an instruction parser maps a user phrase into a discrete \texttt{TaskType}. That task is converted into a subgoal plan and a control binding specifying which policy to instantiate, how many cubes to use, and which environment overrides should be active. At the back end, a finite-state manipulation policy drives the robot in simulation while geometric verifiers evaluate the result.
+
+\subsection{Environment and Task Representation}
+The custom environment, \texttt{LineLayoutBlocksEnv}, registers a tabletop scene with a Panda arm, parallel gripper, and multiple box objects. The environment supports several placement profiles, including random calibration-style spawning, deterministic horizontal line layouts, and deterministic vertical stacks. Cubes can also be assigned preset color cycles so the same low-level manipulation framework can be reused for multicolor tasks. The environment exposes the robot end-effector position, cube body poses, and contact-based helper methods that the policies use while executing each phase.
+
+A key design choice is to separate task definition from execution. The instruction bridge recognizes a limited but meaningful set of commands, including horizontal line assembly, vertical stacking, and sorting by color. This makes the language layer a typed routing system rather than a source of low-level intelligence. In other words, language decides \emph{which} executable behavior to run, while the policy and controller decide \emph{how} to move the robot.
+
+\subsection{Verification Layer}
+The verification layer is implemented independently from the manipulation policies. For a horizontal line, the verifier checks whether cube centers are aligned along the primary axis with small cross-axis spread and roughly uniform center-to-center pitch. For a vertical stack, it checks shared $(x,y)$ position and increasing $z$ values with acceptable spacing. This separation is important because it prevents evaluation from depending on the same heuristic used to act. The policy can therefore fail, partially succeed, or accidentally succeed, and the verifier still provides an external judgment of the final layout.
+
+\subsection{Finite-State Pick-and-Place Policies}
+Instead of using a monolithic policy, Stackademic uses finite-state machines for manipulation. Each job is decomposed into phases such as \textit{hover above source}, \textit{descend}, \textit{close gripper}, \textit{lift}, \textit{move above target}, \textit{descend to place}, \textit{open gripper}, and \textit{park}. Each phase has a well-defined target for the end effector, which makes the control loop easier to tune and debug.
+
+The main policies are the horizontal line assembly policy, the vertical line assembly policy, and a more generic assembly policy for preset patterns. These policies are deterministic given the same environment reset and cube ordering. For sorting tasks, the same basic pick-and-place machinery is reused, but the cube order is chosen using the requested mode, such as sorting by color instead of by initial $x$ coordinate.
+
+\subsection{Cartesian PID with OSC\_POSE}
+Low-level control is performed using Cartesian PID under RoboSuite's \texttt{OSC\_POSE} controller. The policies repeatedly read the end-effector position from the observation dictionary, compute the next desired Cartesian target from the current phase, and feed the error into a PID controller. The resulting control output is clipped and written into the first three action dimensions, while orientation deltas remain zero for the current task family.
+
+The controller update follows the standard form
+\begin{equation}
+    u = k_p e + k_i \int e\,dt + k_d \frac{e - e_{\text{prev}}}{dt},
+\end{equation}
+where $e$ is the Cartesian position error. In practice, integral action is used conservatively because windup can hurt performance in contact-rich scenes. The controller works together with phase-specific thresholds, dwell times, and gated vertical motion to reduce overshoot and avoid collisions with the table or previously placed cubes.
+
+\subsection{Why This Method is Technically Sound}
+This approach is technically sound for the scope of the project because it decomposes a difficult manipulation problem into smaller closed-loop regulation problems. Operational-space control provides a meaningful way to command end-effector deltas, while the PID controller corrects local tracking errors during each phase. The verifier layer gives a principled success definition, and the finite-state design makes it possible to attribute failures to specific components such as grasp timing, threshold tuning, or geometry mismatch.
+
+Although the system is not a full motion planner or reinforcement learning pipeline, that is a deliberate design tradeoff. The project prioritizes reliability, interpretability, and alignment with the course's simulation-based manipulation goals. Within that scope, the method is appropriate and extensible.
+
+\section{Evaluation Results}
+Evaluation was performed at multiple levels of integration so that correctness could be checked incrementally rather than only at the end of a full rollout.
+
+\subsection{Unit and Geometry Tests}
+The first tier of testing validates pure geometry. Synthetic cube positions are passed into the horizontal and vertical verifiers to confirm that correct layouts pass and perturbed layouts fail. These tests verify that the mathematical notion of a line or stack is implemented consistently before any robot motion is involved.
+
+\subsection{Environment and Verifier Wiring}
+The second tier checks that the environment, reward hooks, and verifier outputs all agree. For example, spawning cubes directly in a horizontal line should immediately produce a successful horizontal evaluation, and a sparse-reward configuration should return reward $1.0$ when the layout is correct. Similar tests are run for vertical stacks and for manually snapped cube poses. These checks confirm that the simulator state, the reported \texttt{info} dictionary, and the reward logic are all wired to the same success definitions.
+
+\subsection{Full Integration Tests}
+The most important evaluation uses full instruction-to-policy rollouts. Representative test phrases include \textit{stack two blocks}, \textit{put four cubes in a row}, and \textit{sort by color}. For each scenario, the system builds the correct binding, instantiates the corresponding policy, runs the simulation loop, and then verifies both the final layout and the policy completion flag.
+
+An observed aggregate run on March 19, 2026 reported that all selected tests passed, including horizontal verification, vertical stack verification, instruction parsing, plan-binding consistency, instruction edge cases, and full integration tasks. The full suite completed successfully with closed-loop rollouts for vertical, horizontal, and color-sorted tasks. This result shows that Stackademic works not only as a collection of isolated modules but also as a unified robotics pipeline.
+
+\begin{table}[H]
+\centering
+\caption{Representative evaluation coverage in Stackademic.}
+\begin{tabular}{p{0.28\columnwidth} p{0.30\columnwidth} p{0.28\columnwidth}}
+\toprule
+Test layer & What it proves & Representative outcome \\
+\midrule
+Geometry tests & Row / stack definitions are correct & Pass on valid layouts, fail on perturbed layouts \\
+Environment wiring & Rewards, info dicts, and evaluators agree & Correct spawn profiles immediately verify \\
+Full integration & Language, policy, controller, and sim work together & All selected tasks passed \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The project also exposes several engineering hyperparameters that influence performance, including PID gains, waypoint thresholds, settle-step counts, grasp timers, inter-cube gap, and clearance heights. These are useful ablation levers because they let us study how much robustness comes from controller tuning versus task geometry assumptions.
+
+\section{Discussion and Reflection}
+One of the strongest aspects of Stackademic is its modularity. Because parsing, planning, control, and verification are separated, the system is easy to analyze and extend. For example, the current regex-based instruction parser could be replaced with an LLM-backed front end without changing the lower-level policies. Similarly, the verifier layer could support new target geometries without requiring a redesign of the entire environment.
+
+Another strength is interpretability. When the robot fails, the failure is usually understandable: the gripper may not secure a cube, the PID thresholds may be too strict or too loose, the end-effector may descend too aggressively near the table, or the final cube spacing may disagree with the verifier's nominal pitch. This is valuable in a class setting because it makes debugging scientific rather than guess-based.
+
+At the same time, the project has important limitations. It does not solve general motion planning in cluttered scenes, it assumes a relatively structured tabletop workspace, and it does not yet support variable-sized objects in simulation even though \textit{sort by size} is recognized at the binding layer. Orientation control is also simplified since the active tasks rely primarily on translational placement with zero orientation delta. More complex manipulation tasks would require stronger treatment of object pose, grasp synthesis, and collision-aware planning.
+
+A second limitation is that the PID controller is validated indirectly through end-task success rather than through a dedicated control-theoretic analysis. For this project, that is acceptable because the real deliverable is reliable manipulation behavior in simulation. Still, future work could include controller response plots, sensitivity sweeps over gains, or more formal tracking metrics.
+
+Overall, Stackademic succeeds as a robust and well-structured manipulation project. It demonstrates that a carefully engineered pipeline can translate high-level commands into closed-loop robotic behavior while remaining interpretable and testable. The project also leaves room for future expansion into richer language interfaces, more complex patterns, and stronger low-level control.
+
+\section{Team Contribution Division}
+This project was developed in a collaborative manner, with work distributed across system design, implementation, testing, and write-up. Rather than assigning each person to one isolated subsystem, the development process relied on frequent iteration across shared components such as policy logic, environment configuration, and evaluation.
+
+\begin{itemize}[leftmargin=1.2em]
+    \item \textbf{Armaan Bassi:} Designed and integrated the report structure, synthesized the system-level methodology, and connected the project narrative across instruction parsing, policy control, and evaluation.
+    \item \textbf{[Rahul Nanda]:} Contributed to environment setup, verifier logic, and task-level testing. Replace this line with the specific responsibilities of your teammate.
+    \item \textbf{Shared work:} Policy debugging, controller tuning, rollout testing, result interpretation, and final report revision were completed collaboratively.
+\end{itemize}
+
+If your professor expects more specific attribution, you can replace the placeholders above with exact names and responsibilities such as parser implementation, horizontal policy development, vertical stack testing, or report editing.
+
+\end{document}
