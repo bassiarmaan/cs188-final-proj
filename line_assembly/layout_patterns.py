@@ -8,14 +8,28 @@ import numpy as np
 _WORKSPACE_X = (-0.26, 0.26)
 _WORKSPACE_Y = (-0.14, 0.14)
 
-# 7x5 bitmap, '1' = cube. eyes, gap, mouth
+# Bitmap: '1' = cube. Default 5x7 smiley; overwritten by set_smiley_rows() for custom designs (e.g. 6x8 from GPT).
 SMILEY_ROWS = (
     "0100010",
+    "0001000",
     "0000000",
+    "1110111",
     "0000000",
-    "1000001",
-    "0111110",
 )
+
+
+def set_smiley_rows(rows: tuple[str, ...]) -> None:
+    """Set SMILEY_ROWS to a custom bitmap. Validates: same-length rows, only 0 and 1."""
+    global SMILEY_ROWS
+    if not rows:
+        raise ValueError("Bitmap must have at least one row")
+    ncols = len(rows[0])
+    for i, row in enumerate(rows):
+        if len(row) != ncols:
+            raise ValueError(f"Row {i} has length {len(row)}, expected {ncols}")
+        if not all(c in "01" for c in row):
+            raise ValueError(f"Row {i} contains invalid chars (only 0 and 1 allowed)")
+    SMILEY_ROWS = tuple(rows)
 
 
 def smiley_cell_offsets() -> list[tuple[int, int]]:
