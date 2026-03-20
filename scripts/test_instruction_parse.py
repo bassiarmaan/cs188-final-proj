@@ -20,6 +20,9 @@ def _cases():
         ("Build a tall tower", TaskType.STACK_VERTICAL, None),
         ("pile them vertically", TaskType.STACK_VERTICAL, None),
         ("Stack three blocks", TaskType.STACK_VERTICAL, 3),
+        ("vertical stack please", TaskType.STACK_VERTICAL, None),
+        ("Put one on top of the other", TaskType.STACK_VERTICAL, None),
+        ("Place them on top of each other", TaskType.STACK_VERTICAL, None),
         ("Line up the cubes in a row", TaskType.LINE_HORIZONTAL, None),
         ("Put them side by side horizontally", TaskType.LINE_HORIZONTAL, None),
         ("Arrange in a straight line", TaskType.LINE_HORIZONTAL, None),
@@ -34,9 +37,15 @@ def _cases():
 
 
 def _test_precedence_stack_over_line():
-    """If both stack and line cues appear, first matching rule in parser wins."""
+    """Stack cues win over weak horizontal wording ("line up", "straight line", …)."""
     p = parse_instruction("stack blocks in a vertical column")
     assert p.task_type is TaskType.STACK_VERTICAL
+    p = parse_instruction("line up the cubes vertically")
+    assert p.task_type is TaskType.STACK_VERTICAL
+    p = parse_instruction("line them in a column")
+    assert p.task_type is TaskType.STACK_VERTICAL
+    p = parse_instruction("line up in a row")
+    assert p.task_type is TaskType.LINE_HORIZONTAL
 
 
 def _test_unknown_raises():

@@ -27,6 +27,9 @@ def main():
     p = parse_instruction("sort by color and by size")
     assert p.task_type is TaskType.SORT_BY_SIZE
 
+    p = parse_instruction("vertical")
+    assert p.task_type is TaskType.STACK_VERTICAL
+
     # Gibberish
     for bad in ("", "hello", "do the thing"):
         try:

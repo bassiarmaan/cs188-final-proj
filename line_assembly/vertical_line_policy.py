@@ -27,18 +27,18 @@ class VerticalLineAssemblyPolicy:
         env,
         *,
         inter_cube_gap: float = 0.008,
-        place_eef_above_center: float = 0.016,
-        kp: float = 85.0,
+        place_eef_above_center: float = 0.020,
+        kp: float = 92.0,
         ki: float = 0.0,
-        kd: float = 10.0,
+        kd: float = 12.0,
         hover_z: float = 0.10,
         grasp_z_slack: float = 0.003,
-        pos_threshold: float = 0.022,
-        pos_threshold_coarse: float = 0.045,
-        gripper_close_steps: int = 120,
-        gripper_open_steps: int = 55,
-        settle_steps: int = 12,
-        settle_steps_place: int = 22,
+        pos_threshold: float = 0.017,
+        pos_threshold_coarse: float = 0.038,
+        gripper_close_steps: int = 170,
+        gripper_open_steps: int = 60,
+        settle_steps: int = 14,
+        settle_steps_place: int = 34,
         ascend_clear_above_placed_z: float = 0.34,
         final_park_above_top: float = 0.36,
         final_park_settle_steps: int = 25,
@@ -47,8 +47,6 @@ class VerticalLineAssemblyPolicy:
         self.env = env
         self.inter_cube_gap = float(inter_cube_gap)
         self.place_eef_above_center = float(place_eef_above_center)
-        self.env.vertical_stack_eval_gap = self.inter_cube_gap
-
         self.hover_z = hover_z
         self.grasp_z_slack = grasp_z_slack
         self.pos_threshold = pos_threshold
@@ -66,8 +64,6 @@ class VerticalLineAssemblyPolicy:
         self.dt = 1.0 / float(env.control_freq)
 
         hz = float(env.cube_half_extents[2])
-        self.stack_pitch = 2.0 * hz + self.inter_cube_gap
-
         positions = env.get_cube_world_positions()
         z_table = env._cube_center_z_on_table()
         hx0 = float(env.cube_half_extents[0])
@@ -77,6 +73,13 @@ class VerticalLineAssemblyPolicy:
         )
 
         n = positions.shape[0]
+        eff_gap = float(self.inter_cube_gap)
+        if n >= 7:
+            eff_gap = min(eff_gap, 0.005)
+        self.inter_cube_gap = eff_gap
+        self.env.vertical_stack_eval_gap = eff_gap
+        self.stack_pitch = 2.0 * hz + eff_gap
+
         if self.pick_sort_mode == "x":
             pick_order = np.argsort(positions[:, 0])
         else:
@@ -147,7 +150,8 @@ class VerticalLineAssemblyPolicy:
         if self.phase == Phase.HOVER_SLOT:
             rel = self._slot_release_xyz(job)
             zt = float(self.env._cube_center_z_on_table())
-            z_h = max(rel[2] + self.hover_z + 0.20, zt + 0.36)
+            # Extra margin over the slot so the wrist clears the tower on high placements.
+            z_h = max(rel[2] + self.hover_z + 0.24, zt + 0.40, float(s[2]) + 0.10)
             return np.array([rel[0], rel[1], z_h])
         if self.phase == Phase.DOWN_SLOT:
             return self._slot_release_xyz(job)
@@ -274,10 +278,13 @@ class VerticalLineAssemblyPolicy:
             if self.env.is_gripping_cube(job.cube_index):
                 self.grasp_streak += 1
             else:
-                self.grasp_streak = 0
-            if self.grasp_streak >= 28:
+                # Decay instead of zeroing so brief sim flicker does not force a "blind" lift.
+                self.grasp_streak = max(0, self.grasp_streak - 4)
+            if self.grasp_streak >= 26:
                 self._advance_phase()
-            elif self.phase_counter >= self.gripper_close_steps:
+            elif self.phase_counter >= self.gripper_close_steps and self.grasp_streak >= 14:
+                self._advance_phase()
+            elif self.phase_counter >= self.gripper_close_steps + 120:
                 self._advance_phase()
         elif self.phase in (Phase.LIFT, Phase.HOVER_SLOT, Phase.DOWN_SLOT):
             g = grip_close

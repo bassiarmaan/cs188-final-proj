@@ -53,6 +53,9 @@ def _test_cube_count_override():
     p = parse_instruction("stack five blocks")
     b = control_binding_for_plan(p)
     assert b.env_overrides.get("cube_count") == 5
+    p10 = parse_instruction("stack ten blocks")
+    b10 = control_binding_for_plan(p10)
+    assert b10.env_overrides.get("cube_count") == 10
 
 
 def _test_instantiate_rejects_size():

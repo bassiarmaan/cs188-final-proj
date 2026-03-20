@@ -59,6 +59,10 @@ def _extract_small_int(text: str) -> int | None:
         "four": 4,
         "five": 5,
         "six": 6,
+        "seven": 7,
+        "eight": 8,
+        "nine": 9,
+        "ten": 10,
     }
     lower = text.lower()
     for w, n in words.items():
@@ -106,8 +110,27 @@ def parse_instruction(text: str) -> ParsedInstruction:
         and any(_w(w) for w in ("sort", "order", "arrange", "organize"))
     )
     stack_hit = any(
-        k in lower for k in ("stack", "tower", "pile", "column", "vertically", "on top of each")
+        k in lower
+        for k in (
+            "stack",
+            "tower",
+            "pile",
+            "column",
+            "vertically",
+            "on top of each",
+        )
     )
+    vertical_word = re.search(r"\bvertical\b", lower) is not None
+    on_top_hit = bool(
+        re.search(r"on top of (the other|each other|another|the last|previous)", lower)
+        or re.search(r"\bone on top\b", lower)
+        or re.search(r"\bbuild upwards?\b", lower)
+        or re.search(
+            r"\b(put|place)\b.+\bon top of (each|the other|another)\b", lower
+        )
+    )
+    vertical_intent = stack_hit or vertical_word or on_top_hit
+
     line_hit = any(
         k in lower
         for k in (
@@ -120,6 +143,8 @@ def parse_instruction(text: str) -> ParsedInstruction:
             "straight line",
         )
     )
+    # "line up vertically" / "line them in a column" set line_hit but are clearly stacks.
+    horizontal_line_only = line_hit and not (stack_hit or vertical_word or on_top_hit)
 
     if size_hit:
         return ParsedInstruction(t, TaskType.SORT_BY_SIZE, n_cubes, notes)
@@ -129,7 +154,7 @@ def parse_instruction(text: str) -> ParsedInstruction:
             notes.append("no_count_mentioned_default_env")
         return ParsedInstruction(t, TaskType.SORT_BY_COLOR, n_cubes, notes)
 
-    if stack_hit and not line_hit:
+    if vertical_intent and not horizontal_line_only:
         if n_cubes is None:
             notes.append("no_count_mentioned_default_env")
         return ParsedInstruction(t, TaskType.STACK_VERTICAL, n_cubes, notes)
@@ -221,7 +246,7 @@ def control_binding_for_plan(parsed: ParsedInstruction) -> ControlBinding:
         "vertical_stack_eval_gap": gap,
     }
     if parsed.suggested_cube_count is not None:
-        base_env["cube_count"] = max(1, min(8, int(parsed.suggested_cube_count)))
+        base_env["cube_count"] = max(1, min(10, int(parsed.suggested_cube_count)))
 
     if parsed.task_type is TaskType.STACK_VERTICAL:
         return ControlBinding(
@@ -280,8 +305,8 @@ def run_parsed_instruction(
 ) -> tuple[int, dict[str, Any]]:
     # Convenience wrapper for scripts; returns (step count, little summary dict).
     binding = control_binding_for_plan(parsed)
-    policy = instantiate_policy(env, binding)
     obs = env.reset()
+    policy = instantiate_policy(env, binding)
     steps = 0
     info: dict[str, Any] = {}
     while steps < max_steps and not policy.finished:

@@ -42,11 +42,13 @@ def main():
         render=args.render,
         placement_profile="calibration",
     )
+    obs = env.reset()
     policy = ptm._build_policy("g2", env, args.pick)
     print("2×2 columns (8 cubes, 2 high per cell)")
     ptm._run_policy(
         env,
         policy,
+        obs=obs,
         max_steps=args.max_steps,
         render=args.render,
         hold_seconds=args.hold_seconds,

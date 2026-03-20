@@ -49,22 +49,64 @@ def _grid_footprint_half_extents(nx: int, ny: int, xy_pitch: float) -> tuple[flo
 
 
 def grid_cell_visit_order(nx: int, ny: int) -> list[tuple[int, int]]:
-    # walk around the outside first so the arm doesn't punch through the middle as much
-    if nx == 2 and ny == 2:
-        return [(0, 0), (1, 0), (1, 1), (0, 1)]
-    if nx == 3 and ny == 3:
-        return [
-            (0, 0),
-            (1, 0),
-            (2, 0),
-            (2, 1),
-            (2, 2),
-            (1, 2),
-            (0, 2),
-            (0, 1),
-            (1, 1),
-        ]
+    # 2×2 overrides with robot-aware order inside grid_stack_world_slots; others: row-major in x then y.
     return [(ix, iy) for ix in range(nx) for iy in range(ny)]
+
+
+def _robot_base_xy(env) -> np.ndarray:
+    """World XY of the first manipulator base; origin if lookup fails."""
+    try:
+        r = env.robots[0]
+        if hasattr(r, "base_pos"):
+            p = np.asarray(r.base_pos, dtype=np.float64).ravel()
+            return np.array([float(p[0]), float(p[1])], dtype=np.float64)
+        m = r.robot_model
+        if hasattr(m, "base_xpos"):
+            p = np.asarray(m.base_xpos, dtype=np.float64).ravel()
+            return np.array([float(p[0]), float(p[1])], dtype=np.float64)
+        sim = env.sim
+        prefix = getattr(m, "naming_prefix", "robot0_")
+        bid = sim.model.body_name2id(prefix + "base")
+        p = sim.data.get_body_xpos(bid)
+        return np.array([float(p[0]), float(p[1])], dtype=np.float64)
+    except Exception:
+        return np.zeros(2, dtype=np.float64)
+
+
+def _grid_visit_order_rows_far_first(
+    env,
+    nx: int,
+    ny: int,
+    cx: float,
+    cy: float,
+    xy_pitch: float,
+) -> list[tuple[int, int]]:
+    """Visit by row (iy): farther-from-robot row first; within a row, farther ix first."""
+    rb = _robot_base_xy(env)
+
+    def cell_xy(ix: int, iy: int) -> tuple[float, float]:
+        x = cx + (ix - (nx - 1) / 2.0) * xy_pitch
+        y = cy + (iy - (ny - 1) / 2.0) * xy_pitch
+        return float(x), float(y)
+
+    def dist(ix: int, iy: int) -> float:
+        x, y = cell_xy(ix, iy)
+        return float(np.hypot(x - rb[0], y - rb[1]))
+
+    rows = list(range(ny))
+    rows.sort(
+        key=lambda iy: (
+            -max(dist(ix, iy) for ix in range(nx)),
+            iy,
+        )
+    )
+    out: list[tuple[int, int]] = []
+    for iy in rows:
+        cols = list(range(nx))
+        cols.sort(key=lambda ix: (-dist(ix, iy), ix))
+        for ix in cols:
+            out.append((ix, iy))
+    return out
 
 
 def _footprint_disjoint(
@@ -247,7 +289,8 @@ def grid_stack_world_slots(
     xy_pitch_scale: float = 1.48,
     inter_cube_gap_z: float = 0.01,
 ) -> list[np.ndarray]:
-    # nx*ny towers, bottom slice first. visit order is the weird perimeter thing for 2x2/3x3
+    # Multi-layer grids: layer-first (all bottoms, then all second layers, …) so the arm rarely
+    # carries a cube over a two-high neighbor. 2×2 cell order: far row/column from robot base first.
     hx = float(env.cube_half_extents[0])
     hz = float(env.cube_half_extents[2])
     xy_pitch = (2.0 * hx + 0.012) * float(xy_pitch_scale)
@@ -257,12 +300,24 @@ def grid_stack_world_slots(
     cx, cy = pattern_anchor_clear_of_cubes(env, half_extent_x=half_x, half_extent_y=half_y)
     z_table = env._cube_center_z_on_table()
 
+    if nx == 2 and ny == 2:
+        visit = _grid_visit_order_rows_far_first(env, nx, ny, cx, cy, xy_pitch)
+    else:
+        visit = grid_cell_visit_order(nx, ny)
+
     slots: list[np.ndarray] = []
-    for ix, iy in grid_cell_visit_order(nx, ny):
-        x = cx + (ix - (nx - 1) / 2.0) * xy_pitch
-        y = cy + (iy - (ny - 1) / 2.0) * xy_pitch
+    if stack_height > 1:
         for iz in range(stack_height):
-            z = z_table + iz * stack_pitch
+            for ix, iy in visit:
+                x = cx + (ix - (nx - 1) / 2.0) * xy_pitch
+                y = cy + (iy - (ny - 1) / 2.0) * xy_pitch
+                z = z_table + iz * stack_pitch
+                slots.append(np.array([x, y, z], dtype=np.float64))
+    else:
+        for ix, iy in visit:
+            x = cx + (ix - (nx - 1) / 2.0) * xy_pitch
+            y = cy + (iy - (ny - 1) / 2.0) * xy_pitch
+            z = z_table
             slots.append(np.array([x, y, z], dtype=np.float64))
     return slots
 

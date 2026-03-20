@@ -99,25 +99,28 @@ python scripts/demo_from_instruction.py --text "sort by color" --render
 
 ### Interactive task bank (terminal + render)
 
-[`scripts/play_task_menu.py`](scripts/play_task_menu.py) loops on `task>` input: choose a **preset** (horizontal row, vertical stack, **smiley**, then 2×2 / 3×3 grids) and optional **color** (`blue`, `red`, … or `default` multicolor). Uses **OSC_POSE** and the same PID pick-place stack as the demos.
+[`scripts/play_task_menu.py`](scripts/play_task_menu.py) loops on `task>` input: choose a **preset** (horizontal row, vertical stack, **smiley**, 2×2 column grid) and optional **color** (`blue`, `red`, … or `default` multicolor). Uses **OSC_POSE** and the same PID pick-place stack as the demos.
 
 ```bash
 python scripts/play_task_menu.py
 ```
 
-Examples at the prompt: `h`, `hc`, `v`, **`smiley`** (flat pattern — good to try before `g2` / `g3`), then `g2`, `g3`, or `blue v` / `v blue`. Non-interactive: `python scripts/play_task_menu.py --one-shot "red smiley"`. Headless: `--no-render`. Override pick order: `--pick color` or `--pick x`.
+Examples at the prompt: `h`, `hc`, `v` (aliases: `stack`, `vertical`, `tower`, `pile`, `column`), **`smiley`** (flat pattern — good to try before `g2`), then `g2`, or `blue v` / `v blue`. For a taller tower, pass a count: `v 4`, `stack four`, `5 vertical` (up to 8 cubes). Non-interactive: `python scripts/play_task_menu.py --one-shot "red smiley"` or `--one-shot "stack 4"`. Headless: `--no-render`. Override pick order: `--pick color` or `--pick x`.
+
+Natural-language demos (`demo_from_instruction.py`) also treat more phrasing as a vertical stack, e.g. **“vertical …”**, **“on top of each other”**, **“one on top …”**, not only the word “stack”.
+
+**2×2 grid (`g2`):** Slots are built **layer-first** (all four base cubes, then four top cubes) and cells are ordered from the side **farther from the robot base** first, so the arm does less work over tall stacks. The generic policy still sends **zero rotation** on `action[3:6]` (position-only deltas under OSC_POSE); changing approach angle would mean nontrivial orientation commands or a different controller, not just reordering picks.
 
 **One demo per pattern** (recommended order: smiley before the heavy grids):
 
 ```bash
 python scripts/demo_smiley.py --render
 python scripts/demo_2x2_columns.py --render
-python scripts/demo_3x3_columns.py --render   # table_uniform spawn (18 cubes)
 ```
 
 Each supports `--color blue` (etc.), `--pick x`, `--max-steps`, and `--hold-seconds`.
 
-Run them in that order automatically (headless): `python scripts/run_all_demos.py` (add `--skip-3x3` to skip the long 18-cube grid).
+Run them in that order automatically (headless): `python scripts/run_all_demos.py`.
 
 **Run everything (use `--skip-slow` to omit full rollouts):**
 
@@ -125,6 +128,10 @@ Run them in that order automatically (headless): `python scripts/run_all_demos.p
 python scripts/run_all_tests.py
 python scripts/run_all_tests.py --skip-slow
 ```
+
+### Placement accuracy (defaults are already tightened a bit)
+
+Policies use a Cartesian PID on `robot0_eef_pos`. Knobs live on `HorizontalLineAssemblyPolicy`, `VerticalLineAssemblyPolicy`, and `GenericAssemblyPolicy` in `line_assembly/`: **`pos_threshold` / `pos_threshold_coarse`** (smaller → must get closer before advancing phase), **`settle_steps` / `settle_steps_place`** (longer dwell at grasp and place), **`kp` / `kd`**, and for grids **`slow_xy_carry_scale`** and **`hover_slot_z_extra`**. The interactive **g2** and **smiley** presets in [`scripts/play_task_menu.py`](scripts/play_task_menu.py) pass stricter overrides on top of those defaults. If runs get jittery, ease thresholds back up slightly instead of raising gains further.
 
 ### Ideas to grow complexity while staying doable
 

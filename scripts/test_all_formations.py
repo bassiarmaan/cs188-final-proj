@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Sanity check each menu task finishes. --quick drops g2/g3. Smiley runs before grids."""
+"""Sanity check each menu task finishes. --quick skips g2. Smiley runs before g2."""
 
 from __future__ import annotations
 
@@ -43,12 +43,11 @@ def _run(task: str, *, max_steps: int, seed: int) -> tuple[int, bool]:
         render=False,
         placement_profile=profile,
     )
+    obs = env.reset()
     policy = ptm._build_policy(task, env, None)
     if policy is None:
         env.close()
         raise ValueError(f"unknown task {task!r}")
-
-    obs = env.reset()
     steps = 0
     while steps < max_steps and not policy.finished:
         obs, _, done, _ = env.step(policy.get_action(obs))
@@ -65,7 +64,7 @@ def main():
     ap.add_argument(
         "--quick",
         action="store_true",
-        help="Skip 2×2 and 3×3 grid demos only (smiley still runs).",
+        help="Skip 2×2 grid only (smiley still runs).",
     )
     ap.add_argument("--max-steps", type=int, default=90000)
     ap.add_argument("--seed", type=int, default=7)
@@ -73,7 +72,7 @@ def main():
 
     tasks = ["h", "hc", "v", "smiley"]
     if not args.quick:
-        tasks.extend(["g2", "g3"])
+        tasks.extend(["g2"])
 
     failed: list[str] = []
     for t in tasks:

@@ -2,7 +2,7 @@
 """
 Interactive launcher: enter a task and optional color, with or without rendering.
 
-  Tasks: h, hc|sort, v, smiley, g2, g3  (smiley is a smaller task; handy to try before the grids)
+  Tasks: h, hc|sort, v, smiley, g2  (smiley before g2 is a lighter warm-up)
   Color names can appear anywhere in the line, e.g.  blue v  or  red smiley
   q or quit exits.
 
@@ -55,6 +55,24 @@ _COLOR_WORDS = frozenset(
     )
 )
 
+# Optional cube count after task name, e.g.  v 4  stack four  blue v 6
+_COUNT_WORDS = {
+    "one": 1,
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+    "seven": 7,
+    "eight": 8,
+}
+_MAX_MENU_CUBES = 8
+
+# Same task as v / stack / vertical (NL uses tower, pile, column too).
+_VERTICAL_ALIASES = frozenset(
+    {"v", "stack", "vertical", "tower", "pile", "column", "col"}
+)
+
 
 def _pick_order(env, mode: str) -> np.ndarray:
     positions = env.get_cube_world_positions()
@@ -98,8 +116,15 @@ def _make_env(
     )
 
 
-def _run_policy(env, policy, *, max_steps: int, render: bool, hold_seconds: float):
-    obs = env.reset()
+def _run_policy(
+    env,
+    policy,
+    *,
+    obs,
+    max_steps: int,
+    render: bool,
+    hold_seconds: float,
+):
     steps = 0
     while steps < max_steps and not policy.finished:
         obs, _, done, info = env.step(policy.get_action(obs))
@@ -122,20 +147,35 @@ def _run_policy(env, policy, *, max_steps: int, render: bool, hold_seconds: floa
             env.render()
 
 
-def _parse_line(line: str) -> tuple[str | None, str]:
+def _parse_line(line: str) -> tuple[str | None, str, int | None]:
     parts = line.strip().lower().split()
     if not parts:
-        return None, "default"
+        return None, "default", None
+    count: int | None = None
+    rest: list[str] = []
+    for p in parts:
+        if p.isdigit():
+            v = int(p)
+            if 1 <= v <= _MAX_MENU_CUBES and count is None:
+                count = v
+            continue
+        if p in _COUNT_WORDS:
+            if count is None:
+                count = _COUNT_WORDS[p]
+            continue
+        rest.append(p)
+    if not rest:
+        return None, "default", count
     color = "default"
     filtered: list[str] = []
-    for p in parts:
+    for p in rest:
         if p in _COLOR_WORDS:
             color = "blue" if p == "all_blue" else p
         else:
             filtered.append(p)
     if not filtered:
-        return None, color
-    return filtered[0], color
+        return None, color, count
+    return filtered[0], color, count
 
 
 def _build_policy(task: str, env, pick_override: str | None):
@@ -145,45 +185,38 @@ def _build_policy(task: str, env, pick_override: str | None):
         return HorizontalLineAssemblyPolicy(env, inter_cube_gap=gap, pick_sort_mode=mode)
     if task in ("hc", "hcolor", "rowc", "sort", "colorsort"):
         return HorizontalLineAssemblyPolicy(env, inter_cube_gap=gap, pick_sort_mode="color")
-    if task in ("v", "stack", "vertical"):
+    if task in _VERTICAL_ALIASES:
         mode = pick_override or "color"
         return VerticalLineAssemblyPolicy(env, inter_cube_gap=gap, pick_sort_mode=mode)
     if task in ("g2", "grid2"):
         n = 2
         h = 2
-        slots = grid_stack_world_slots(env, n, n, h)
-        pick = pick_override or "color"
-        jobs = _jobs_from_slots(env, slots, pick)
-        return GenericAssemblyPolicy(
+        slots = grid_stack_world_slots(
             env,
-            jobs,
-            inter_cube_gap=gap,
-            ascend_above_each_slot=True,
-            ascend_clear_above_placed_z=0.38,
-            hover_slot_z_extra=0.16,
-            transit_min_z_above_table=0.33,
-            slow_xy_carry=True,
-            settle_steps_place=28,
-            pos_threshold_coarse=0.052,
+            n,
+            n,
+            h,
+            xy_pitch_scale=1.76,
+            inter_cube_gap_z=0.012,
         )
-    if task in ("g3", "grid3"):
-        n = 3
-        h = 2
-        slots = grid_stack_world_slots(env, n, n, h)
         pick = pick_override or "color"
         jobs = _jobs_from_slots(env, slots, pick)
         return GenericAssemblyPolicy(
             env,
             jobs,
             inter_cube_gap=gap,
+            kp=96.0,
+            kd=13.0,
             ascend_above_each_slot=True,
-            ascend_clear_above_placed_z=0.40,
-            hover_slot_z_extra=0.18,
-            transit_min_z_above_table=0.35,
+            ascend_clear_above_placed_z=0.46,
+            hover_slot_z_extra=0.24,
+            transit_min_z_above_table=0.42,
             slow_xy_carry=True,
-            settle_steps_place=30,
-            pos_threshold_coarse=0.055,
-            final_park_z_offset=0.38,
+            slow_xy_carry_scale=0.085,
+            settle_steps=16,
+            settle_steps_place=38,
+            pos_threshold=0.016,
+            pos_threshold_coarse=0.041,
         )
     if task in ("smiley", "face"):
         slots = smiley_world_slots(env)
@@ -192,28 +225,46 @@ def _build_policy(task: str, env, pick_override: str | None):
         return GenericAssemblyPolicy(
             env,
             jobs,
+            kp=94.0,
+            kd=12.5,
             ascend_above_each_slot=False,
             clear_height_above_table=0.24,
             hover_slot_z_extra=0.08,
             transit_min_z_above_table=0.26,
             slow_xy_carry=True,
-            settle_steps_place=26,
-            pos_threshold_coarse=0.05,
+            slow_xy_carry_scale=0.12,
+            settle_steps=15,
+            settle_steps_place=30,
+            pos_threshold=0.016,
+            pos_threshold_coarse=0.04,
         )
     return None
 
 
-def _cube_count_for_task(task: str) -> int:
-    if task in ("h", "row", "horizontal", "hc", "hcolor", "rowc", "sort", "colorsort"):
-        return 5
-    if task in ("v", "stack", "vertical"):
-        return 3
-    if task in ("g2", "grid2"):
-        return grid_cube_count(2, 2, 2)
-    if task in ("g3", "grid3"):
-        return grid_cube_count(3, 3, 2)
+def _cube_count_for_task(task: str, n_override: int | None = None) -> int:
     if task in ("smiley", "face"):
         return smiley_cube_count()
+    if task in ("g2", "grid2"):
+        return grid_cube_count(2, 2, 2)
+
+    if n_override is not None:
+        n = max(1, min(_MAX_MENU_CUBES, int(n_override)))
+        if task in (
+            "h",
+            "row",
+            "horizontal",
+            "hc",
+            "hcolor",
+            "rowc",
+            "sort",
+            "colorsort",
+        ) or task in _VERTICAL_ALIASES:
+            return n
+
+    if task in ("h", "row", "horizontal", "hc", "hcolor", "rowc", "sort", "colorsort"):
+        return 5
+    if task in _VERTICAL_ALIASES:
+        return 3
     raise KeyError(task)
 
 
@@ -230,20 +281,20 @@ def main():
         "--pick",
         choices=("color", "x"),
         default=None,
-        help="Override pick order for h / v / grids / smiley (default: color for v/g/smiley, x for h).",
+        help="Override pick order for h / vertical tasks / g2 / smiley (default: color for v,g2,smiley; x for h).",
     )
     ap.add_argument(
         "--one-shot",
         type=str,
         default=None,
-        help="Non-interactive: e.g. 'blue v' then exit.",
+        help="Non-interactive: e.g. 'blue v', 'stack 4', 'v four'.",
     )
     args = ap.parse_args()
     render = not args.no_render
 
-    def run_one(task: str, color_name: str):
+    def run_one(task: str, color_name: str, n_override: int | None = None):
         rgba = cycle_for_preset(color_name)
-        n_cubes = _cube_count_for_task(task)
+        n_cubes = _cube_count_for_task(task, n_override)
         profile = (
             "table_uniform"
             if n_cubes > 14
@@ -257,21 +308,29 @@ def main():
             placement_profile=profile,
         )
         pick_ov = args.pick
+        obs = env.reset()
         policy = _build_policy(task, env, pick_ov)
         if policy is None:
             print("Unknown task:", task)
             env.close()
             return
         print(f"  Task={task!r} color={color_name!r} cubes={n_cubes}")
-        _run_policy(env, policy, max_steps=args.max_steps, render=render, hold_seconds=args.hold_seconds)
+        _run_policy(
+            env,
+            policy,
+            obs=obs,
+            max_steps=args.max_steps,
+            render=render,
+            hold_seconds=args.hold_seconds,
+        )
         env.close()
 
     if args.one_shot:
-        task, color = _parse_line(args.one_shot)
+        task, color, n_override = _parse_line(args.one_shot)
         if task is None:
             print("Could not parse task from:", args.one_shot)
             sys.exit(1)
-        run_one(task, color)
+        run_one(task, color, n_override)
         return
 
     print(__doc__)
@@ -285,15 +344,18 @@ def main():
             break
         if line.lower() in ("help", "?"):
             print(
-                "  Tasks: h hc|sort v smiley g2 g3  |  Colors: default blue red green yellow magenta"
+                "  Tasks: h hc|sort v|stack|vertical|tower|pile|column smiley g2  |  count: tower 4  pile four"
+            )
+            print(
+                "  Colors: default blue red green yellow magenta (anywhere in the line)"
             )
             continue
-        task, color = _parse_line(line)
+        task, color, n_override = _parse_line(line)
         if task is None:
             print("  Unrecognized; type help for a short list.")
             continue
         try:
-            run_one(task, color)
+            run_one(task, color, n_override)
         except Exception as e:
             print("  Error:", e)
 

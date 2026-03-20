@@ -16,17 +16,17 @@ class GenericAssemblyPolicy:
         *,
         inter_cube_gap: float = 0.008,
         place_eef_above_center: float = 0.016,
-        kp: float = 85.0,
+        kp: float = 92.0,
         ki: float = 0.0,
-        kd: float = 10.0,
+        kd: float = 12.0,
         hover_z: float = 0.10,
         grasp_z_slack: float = 0.003,
-        pos_threshold: float = 0.022,
-        pos_threshold_coarse: float = 0.045,
+        pos_threshold: float = 0.017,
+        pos_threshold_coarse: float = 0.038,
         gripper_close_steps: int = 120,
         gripper_open_steps: int = 55,
-        settle_steps: int = 12,
-        settle_steps_place: int = 22,
+        settle_steps: int = 14,
+        settle_steps_place: int = 28,
         ascend_above_each_slot: bool = False,  # False = flat smiley style clear; True = per-stack for grids
         clear_height_above_table: float = 0.20,
         ascend_clear_above_placed_z: float = 0.24,
@@ -35,6 +35,7 @@ class GenericAssemblyPolicy:
         hover_slot_z_extra: float = 0.0,  # grids: crank this so the wrist clears neighbors
         transit_min_z_above_table: float = 0.0,
         slow_xy_carry: bool = False,
+        slow_xy_carry_scale: float = 0.13,
     ):
         if not jobs:
             raise ValueError("jobs must be non-empty")
@@ -58,6 +59,7 @@ class GenericAssemblyPolicy:
         self.hover_slot_z_extra = float(hover_slot_z_extra)
         self.transit_min_z_above_table = float(transit_min_z_above_table)
         self.slow_xy_carry = bool(slow_xy_carry)
+        self.slow_xy_carry_scale = float(slow_xy_carry_scale)
         self.dt = 1.0 / float(env.control_freq)
 
         self.job_idx = 0
@@ -220,10 +222,12 @@ class GenericAssemblyPolicy:
             Phase.HOVER_SLOT,
             Phase.DOWN_SLOT,
         ):
-            ctrl[0] *= 0.16
-            ctrl[1] *= 0.16
+            s = self.slow_xy_carry_scale
+            ctrl[0] *= s
+            ctrl[1] *= s
 
         action[0:3] = np.clip(ctrl, -1.0, 1.0)
+        # OSC_POSE: rotation deltas unused — gripper keeps controller default orientation.
         action[3:6] = 0.0
 
         thr = (
