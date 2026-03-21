@@ -219,12 +219,15 @@ def _build_policy(task: str, env, pick_override: str | None):
             pos_threshold_coarse=0.041,
         )
     if task in ("smiley", "face"):
-        slots = smiley_world_slots(env)
+        # spawn_top_right: keep pattern right so arm can reach (avoids freeze at unreachable left slots)
+        x_min = 0.18 if getattr(env, "placement_profile", None) == "spawn_top_right" else None
+        slots = smiley_world_slots(env, drawing_region_x_min=x_min)
         pick = pick_override or "color"
         jobs = _jobs_from_slots(env, slots, pick)
         return GenericAssemblyPolicy(
             env,
             jobs,
+            place_eef_above_center=0.084,  # release well above slot (3×) so drop clears neighbors
             kp=94.0,
             kd=12.5,
             ascend_above_each_slot=False,
@@ -234,9 +237,9 @@ def _build_policy(task: str, env, pick_override: str | None):
             slow_xy_carry=True,
             slow_xy_carry_scale=0.12,
             settle_steps=15,
-            settle_steps_place=30,
+            settle_steps_place=15,
             pos_threshold=0.016,
-            pos_threshold_coarse=0.04,
+            pos_threshold_coarse=0.08,  # forgiving: advance when within 8cm (avoids freeze near edges)
         )
     return None
 

@@ -32,6 +32,11 @@ CALIBRATION_X_RANGE = (-0.05, 0.18)
 CALIBRATION_Y_RANGE = (-0.1, 0.1)
 CALIBRATION_Z_OFFSET = 0.01
 
+# Top-right table section for custom-from-prompt spawn
+# X must stay right (>=0.12) so arm can reach both spawn and slots (avoids kinematic freeze)
+SPAWN_TOP_RIGHT_X_RANGE = (0.12, 0.24)
+SPAWN_TOP_RIGHT_Y_RANGE = (-0.02, 0.16)
+
 
 def _default_color_cycle():
     # Red first — handy if you grep for "red block" stuff
@@ -205,6 +210,30 @@ class LineLayoutBlocksEnv(SingleArmEnv):
                 reference_pos=np.array(self.table_offset, dtype=np.float64),
                 z_offset=float(self.cube_half_extents[2]),
             )
+        if self.placement_profile == "compact_row":
+            # dummy sampler — we hand-place in _reset_internal (centered row)
+            return UniformRandomSampler(
+                name="assembly_cube_compact_row_placeholder",
+                x_range=[0.0, 0.0],
+                y_range=[0.0, 0.0],
+                rotation=None,
+                ensure_object_boundary_in_range=False,
+                ensure_valid_placement=False,
+                reference_pos=np.array(self.table_offset, dtype=np.float64),
+                z_offset=float(self.cube_half_extents[2]),
+            )
+        if self.placement_profile == "spawn_top_right":
+            # dummy sampler — we hand-place in _reset_internal (deterministic grid)
+            return UniformRandomSampler(
+                name="assembly_cube_spawn_top_right_placeholder",
+                x_range=[0.0, 0.0],
+                y_range=[0.0, 0.0],
+                rotation=None,
+                ensure_object_boundary_in_range=False,
+                ensure_valid_placement=False,
+                reference_pos=np.array(self.table_offset, dtype=np.float64),
+                z_offset=float(self.cube_half_extents[2]),
+            )
         if self.placement_profile == "vertical_stack":
             return UniformRandomSampler(
                 name="assembly_cube_vertical_placeholder",
@@ -218,7 +247,7 @@ class LineLayoutBlocksEnv(SingleArmEnv):
             )
         raise ValueError(
             "placement_profile must be 'calibration', 'lift_default', 'table_uniform', "
-            "'horizontal_line', or 'vertical_stack'"
+            "'horizontal_line', 'compact_row', 'spawn_top_right', or 'vertical_stack'"
         )
 
     # --- cube geometry helpers ---
@@ -264,12 +293,41 @@ class LineLayoutBlocksEnv(SingleArmEnv):
             object_geoms=self._cubes[cube_index],
         )
 
-    def _spawn_cubes_horizontal_line_layout(self, x_start: float = -0.06, y: float = 0.0) -> None:
+    def _spawn_cubes_horizontal_line_layout(
+        self, x_start: float = -0.06, y: float = 0.0, center: bool = False
+    ) -> None:
         pitch = 2.0 * float(self.cube_half_extents[0])
         z = self._cube_center_z_on_table()
         quat = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
+        if center and self.cube_count > 0:
+            span = (self.cube_count - 1) * pitch
+            x_start = -span / 2.0
         for i, cube in enumerate(self._cubes):
             p = np.array([x_start + i * pitch, y, z], dtype=np.float64)
+            self.sim.data.set_joint_qpos(cube.joints[0], np.concatenate([p, quat]))
+        self.sim.forward()
+
+    def _spawn_cubes_top_right_grid(self) -> None:
+        """Deterministic grid in top-right region, within Panda workspace (no RandomizationError)."""
+        hx = float(self.cube_half_extents[0])
+        pitch_x = 2.0 * hx + 0.02   # column spacing: 2cm gap between cubes
+        pitch_y = 2.0 * hx + 0.05   # row spacing: 5cm gap for easier pickup
+        z = self._cube_center_z_on_table()
+        quat = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
+        x_lo, x_hi = SPAWN_TOP_RIGHT_X_RANGE
+        y_lo, y_hi = SPAWN_TOP_RIGHT_Y_RANGE
+        n = self.cube_count
+        ncol = max(1, int(np.ceil(np.sqrt(n * (x_hi - x_lo) * pitch_y / ((y_hi - y_lo) * pitch_x)))))
+        nrow = (n + ncol - 1) // ncol
+        span_x = (ncol - 1) * pitch_x
+        span_y = (nrow - 1) * pitch_y
+        cx = (x_lo + x_hi) / 2.0
+        cy = (y_lo + y_hi) / 2.0
+        x0 = cx - span_x / 2.0
+        y0 = cy - span_y / 2.0
+        for i, cube in enumerate(self._cubes):
+            col, row = i % ncol, i // ncol
+            p = np.array([x0 + col * pitch_x, y0 + row * pitch_y, z], dtype=np.float64)
             self.sim.data.set_joint_qpos(cube.joints[0], np.concatenate([p, quat]))
         self.sim.forward()
 
@@ -289,6 +347,10 @@ class LineLayoutBlocksEnv(SingleArmEnv):
 
         if self.placement_profile == "horizontal_line":
             self._spawn_cubes_horizontal_line_layout()
+        elif self.placement_profile == "compact_row":
+            self._spawn_cubes_horizontal_line_layout(center=True)
+        elif self.placement_profile == "spawn_top_right":
+            self._spawn_cubes_top_right_grid()
         elif self.placement_profile == "vertical_stack":
             self._spawn_cubes_vertical_stack_layout()
         else:

@@ -36,6 +36,7 @@ class GenericAssemblyPolicy:
         transit_min_z_above_table: float = 0.0,
         slow_xy_carry: bool = False,
         slow_xy_carry_scale: float = 0.13,
+        phase_timeout_seconds: float = 15.0,
     ):
         if not jobs:
             raise ValueError("jobs must be non-empty")
@@ -60,17 +61,21 @@ class GenericAssemblyPolicy:
         self.transit_min_z_above_table = float(transit_min_z_above_table)
         self.slow_xy_carry = bool(slow_xy_carry)
         self.slow_xy_carry_scale = float(slow_xy_carry_scale)
+        self.phase_timeout_seconds = float(phase_timeout_seconds)
         self.dt = 1.0 / float(env.control_freq)
+        self._phase_timeout_steps = max(1, int(phase_timeout_seconds * env.control_freq))
 
         self.job_idx = 0
         self.phase = Phase.HOVER_SOURCE
         self.phase_counter = 0
         self.grasp_streak = 0
+        self._place_phase_steps = 0  # timeout: avoid infinite freeze when target unreachable
         self._lift_target: np.ndarray | None = None
         self._ascend_xy = np.zeros(2, dtype=np.float64)
         self._ascend_z_target = 1.0
         self._final_park_target = np.zeros(3, dtype=np.float64)
         self._done = False
+        self._debug_steps = 0
         self.pid = PIDPosition(kp, ki, kd, np.zeros(3))
         self.pid.reset(self._eef_target())
 
@@ -142,6 +147,7 @@ class GenericAssemblyPolicy:
         self.phase_counter = 0
         self.grasp_streak = 0
         if prev == Phase.CLOSE_GRIP and self.phase == Phase.LIFT:
+            self._place_phase_steps = 0
             c = self._cube_pos(self.jobs[self.job_idx].cube_index)
             zt = self._z_table()
             z_up = float(c[2]) + self.hover_z + 0.07
@@ -184,6 +190,15 @@ class GenericAssemblyPolicy:
         self.phase_counter = 0
         self.pid.reset(self._eef_target())
 
+    def _retry_current_phase(self):
+        """Reset current phase completely (counters, PID, lift target) and try again."""
+        self.phase_counter = 0
+        self._place_phase_steps = 0
+        if self.phase == Phase.LIFT:
+            self._lift_target = None  # recalc from current cube pos
+        self.pid.reset(self._eef_target())
+        print(f"  [retry] stuck in {self.phase.name}, resetting phase")
+
     def _start_final_park(self):
         top_z = max(float(j.slot_xyz[2]) for j in self.jobs)
         cx = float(np.mean([j.slot_xyz[0] for j in self.jobs]))
@@ -212,8 +227,8 @@ class GenericAssemblyPolicy:
         elif self.phase == Phase.DOWN_SOURCE:
             ctrl[2] *= 0.65
         elif self.phase == Phase.ASCEND_CLEAR:
-            ctrl[0] *= 0.2
-            ctrl[1] *= 0.2
+            ctrl[0] *= 0.45  # stronger XY to close gap (was 0.2, caused freeze)
+            ctrl[1] *= 0.45
         elif self.phase == Phase.FINAL_PARK:
             ctrl[0] *= 0.35
             ctrl[1] *= 0.35
@@ -223,24 +238,36 @@ class GenericAssemblyPolicy:
             Phase.DOWN_SLOT,
         ):
             s = self.slow_xy_carry_scale
+            if self.phase in (Phase.HOVER_SLOT, Phase.DOWN_SLOT):
+                s = max(s, 0.4)
+                # when far from target, use full XY (arm was freezing at kinematic limit)
+                if self.pid.error_norm() > 0.12:
+                    s = 1.0
             ctrl[0] *= s
             ctrl[1] *= s
 
-        action[0:3] = np.clip(ctrl, -1.0, 1.0)
+        ctrl_clipped = np.clip(ctrl, -1.0, 1.0)
+        action[0:3] = ctrl_clipped
         # OSC_POSE: rotation deltas unused — gripper keeps controller default orientation.
         action[3:6] = 0.0
 
         thr = (
-            self.pos_threshold_coarse
-            if self.phase
-            in (
-                Phase.LIFT,
-                Phase.HOVER_SLOT,
-                Phase.DOWN_SLOT,
-                Phase.ASCEND_CLEAR,
-                Phase.FINAL_PARK,
+            0.10
+            if self.phase == Phase.ASCEND_CLEAR
+            else (
+                0.09
+                if self.phase == Phase.DOWN_SLOT
+                else (
+                    self.pos_threshold_coarse
+                    if self.phase
+                    in (
+                        Phase.LIFT,
+                        Phase.HOVER_SLOT,
+                        Phase.FINAL_PARK,
+                    )
+                    else self.pos_threshold
+                )
             )
-            else self.pos_threshold
         )
         err_ok = self.pid.error_norm() < thr
         grip_open = -1.0
@@ -251,6 +278,62 @@ class GenericAssemblyPolicy:
             if self.phase in (Phase.DOWN_SLOT, Phase.OPEN_GRIP)
             else self.settle_steps
         )
+
+        # Debug: print every 20 steps for place phases, every 50 when stuck, every 100 otherwise
+        self._debug_steps += 1
+        place_phase = self.phase in (Phase.LIFT, Phase.HOVER_SLOT, Phase.DOWN_SLOT)
+        place_stuck = place_phase and self._place_phase_steps > 50
+        place_timeout = (
+            place_phase and self._place_phase_steps >= self._phase_timeout_steps
+        )
+        do_debug = (
+            place_timeout
+            or (place_phase and (self._place_phase_steps % 20 == 1 or (place_stuck and self._place_phase_steps % 10 == 1)))
+            or (not place_phase and self._debug_steps % 100 == 0)
+        )
+        if do_debug or place_timeout:
+            target = self._eef_target()
+            err = self.pid.error_norm()
+            err_xyz = target - eef
+            if self.phase in (Phase.LIFT, Phase.HOVER_SLOT, Phase.DOWN_SLOT):
+                slot = self.jobs[self.job_idx].slot_xyz
+                print(
+                    f"  [{self.phase.name}] job={self.job_idx} steps={self._place_phase_steps} "
+                    f"eef=({eef[0]:.3f},{eef[1]:.3f},{eef[2]:.3f}) "
+                    f"target=({target[0]:.3f},{target[1]:.3f},{target[2]:.3f}) "
+                    f"err_xyz=({err_xyz[0]:.3f},{err_xyz[1]:.3f},{err_xyz[2]:.3f}) "
+                    f"ctrl=({ctrl[0]:.3f},{ctrl[1]:.3f},{ctrl[2]:.3f}) "
+                    f"action_xyz=({ctrl_clipped[0]:.3f},{ctrl_clipped[1]:.3f},{ctrl_clipped[2]:.3f}) "
+                    f"err={err:.4f} thr={thr:.4f} err_ok={err_ok} settle={self.phase_counter}/{settle_need}"
+                )
+            elif self.phase == Phase.CLOSE_GRIP:
+                job = self.jobs[self.job_idx]
+                gripping = self.env.is_gripping_cube(job.cube_index)
+                print(
+                    f"  [{self.phase.name}] job={self.job_idx} phase_ct={self.phase_counter} "
+                    f"grasp_streak={self.grasp_streak} gripping={gripping} "
+                    f"eef=({eef[0]:.3f},{eef[1]:.3f},{eef[2]:.3f})"
+                )
+            elif self.phase == Phase.OPEN_GRIP:
+                print(
+                    f"  [{self.phase.name}] job={self.job_idx} phase_ct={self.phase_counter}/"
+                    f"{self.gripper_open_steps} eef=({eef[0]:.3f},{eef[1]:.3f},{eef[2]:.3f})"
+                )
+            else:
+                sn = (
+                    self.final_park_settle_steps
+                    if self.phase == Phase.FINAL_PARK
+                    else settle_need
+                )
+                err_xyz = target - eef
+                print(
+                    f"  [{self.phase.name}] job={self.job_idx} "
+                    f"eef=({eef[0]:.3f},{eef[1]:.3f},{eef[2]:.3f}) "
+                    f"target=({target[0]:.3f},{target[1]:.3f},{target[2]:.3f}) "
+                    f"err_xyz=({err_xyz[0]:.3f},{err_xyz[1]:.3f},{err_xyz[2]:.3f}) "
+                    f"ctrl=({ctrl[0]:.3f},{ctrl[1]:.3f},{ctrl[2]:.3f}) "
+                    f"err={err:.4f} thr={thr:.4f} err_ok={err_ok} settle={self.phase_counter}/{sn}"
+                )
 
         if self.phase in (Phase.HOVER_SOURCE, Phase.DOWN_SOURCE):
             g = grip_open
@@ -274,7 +357,11 @@ class GenericAssemblyPolicy:
                 self._advance_phase()
         elif self.phase in (Phase.LIFT, Phase.HOVER_SLOT, Phase.DOWN_SLOT):
             g = grip_close
-            if err_ok:
+            self._place_phase_steps += 1
+            # Timeout: if stuck >phase_timeout_seconds, retry current phase completely
+            if self._place_phase_steps > self._phase_timeout_steps:
+                self._retry_current_phase()
+            elif err_ok:
                 self.phase_counter += 1
                 if self.phase_counter >= settle_need:
                     self._advance_phase()

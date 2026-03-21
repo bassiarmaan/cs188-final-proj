@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Custom design from text prompt: GPT returns a 5x7 bitmap (max 12 cubes), robot arranges cubes."""
+"""Custom design from text prompt: GPT returns a 5x7 bitmap (max 8 cubes), robot arranges cubes."""
 
 from __future__ import annotations
 
@@ -57,22 +57,21 @@ def main():
 
     set_smiley_rows(bitmap)
     n_cubes = smiley_cube_count()
-    if n_cubes > 12:
-        print(f"Error: bitmap has {n_cubes} cubes (max 12). Try a simpler design.")
+    if n_cubes > 8:
+        print(f"Error: bitmap has {n_cubes} cubes (max 8). Try a simpler design.")
         sys.exit(1)
     print(f"Bitmap ({n_cubes} cubes):")
     for row in bitmap:
         print(f"  {row}")
 
     rgba = cycle_for_preset(args.color)
-    # Use table_uniform for 9+ cubes; calibration region is too small
-    profile = "table_uniform" if n_cubes > 8 else "calibration"
+    # Same env setup as smiley demo: calibration placement, n cubes from bitmap
     env = ptm._make_env(
         cube_count=n_cubes,
         rgba_cycle=rgba,
         horizon=args.max_steps + 50,
         render=args.render,
-        placement_profile=profile,
+        placement_profile="calibration",
     )
     obs = env.reset()
     # set_smiley_rows already called; _build_policy("smiley") uses smiley_world_slots → our bitmap

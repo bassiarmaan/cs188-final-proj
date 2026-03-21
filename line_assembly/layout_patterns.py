@@ -273,12 +273,16 @@ def smiley_world_slots(
     env,
     *,
     xy_pitch_scale: float = 1.15,
+    drawing_region_x_min: float | None = None,
 ) -> list[np.ndarray]:
     # one layer, z = table. anchor tries to avoid the random heap
     hx = float(env.cube_half_extents[0])
     xy_pitch = (2.0 * hx + 0.012) * float(xy_pitch_scale)
     half_x, half_y = _smiley_half_extents_xy(xy_pitch)
     cx, cy = pattern_anchor_clear_of_cubes(env, half_extent_x=half_x, half_extent_y=half_y)
+    # spawn_top_right: keep pattern on right so arm can reach (avoids kinematic freeze at left slots)
+    if drawing_region_x_min is not None:
+        cx = max(cx, float(drawing_region_x_min))
     z_table = env._cube_center_z_on_table()
 
     ncols = len(SMILEY_ROWS[0])
